@@ -7,10 +7,10 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 public class Main6 {
     private static Pattern pattern = Pattern.compile("(.*?)(class|interface)(.*?)(extends|implements)(\\s\\w+)(.*?)");
@@ -20,57 +20,61 @@ public class Main6 {
 
     public static void main(String[] args) throws Exception {
 
-        int availableProcessors = Runtime.getRuntime().availableProcessors();
+        final int availableProcessors = Runtime.getRuntime().availableProcessors();
 
-        ExecutorService executorService = Executors.newFixedThreadPool(availableProcessors);
+        final int sizeQueue = 20;
 
+        final BlockingQueue<Runnable> callableBlockingQueue =
+                new ArrayBlockingQueue<>(sizeQueue);
 
-        List<Callable<Void>> callables = Files.walk(Paths.get("data"))
+        final ThreadPoolExecutor poolExecutor =
+                new ThreadPoolExecutor(
+                        4,
+                        4,
+                        10,
+                        TimeUnit.SECONDS,
+                        callableBlockingQueue);
+
+        poolExecutor.prestartAllCoreThreads();
+
+        Files.walk(Paths.get("data"))
                 .filter(Files::isRegularFile)
                 .map(Path::toFile)
                 .filter(file -> file.getName().endsWith(".java"))
-                .collect(Collectors.toList())
-                .stream()
                 .map(fileToMather())
-                .map(matcher -> (Callable<Void>) () -> {
-                    while (matcher.find()) {
-                        saveInMap(matcher.group(3).trim(), matcher.group(5).trim());
-                    }
-                    return null;
-                }).collect(Collectors.toList());
-
-        BlockingQueue<Callable<Void>> callableBlockingQueue =
-                new ArrayBlockingQueue<>(callables.size());
-
-
-        callables.forEach(c -> {
-            try {
-                callableBlockingQueue.put(c);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        });
-
-
-
-        executorService
-                .invokeAll(callableBlockingQueue)
-                .forEach(future -> {
+                .forEach(matcher -> {
                     try {
-                        future.get();
-                    } catch (InterruptedException | ExecutionException e) {
+                        callableBlockingQueue.put(() -> {
+                            while (matcher.find()) {
+                                saveInMap(matcher.group(3).trim(), matcher.group(5).trim());
+                            }
+                        });
+                    } catch (InterruptedException e) {
                         e.printStackTrace();
                     }
                 });
 
-        executorService.shutdown();
 
-        classToHisExtended
-                .entrySet()
-                .stream()
-                .filter((entry) -> entry.getValue().size() >= 1)
-                .forEach(System.out::println);
+        Timer timer = new Timer();
 
+        timer.schedule(new TimerTask() {
+            @Override
+            public void run() {
+
+                if (callableBlockingQueue.isEmpty()) {
+                    poolExecutor.shutdown();
+
+                    classToHisExtended
+                            .entrySet()
+                            .stream()
+                            .filter((entry) -> entry.getValue().size() >= 1)
+                            .forEach(System.out::println);
+                    timer.purge();
+                    timer.cancel();
+                    System.exit(0);
+                }
+            }
+        }, 0, 3000);
 
 
     }
